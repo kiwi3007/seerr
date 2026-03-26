@@ -5984,6 +5984,8 @@ paths:
       responses:
         '204':
           description: Unlinking account succeeded
+        '400':
+          description: Unlink request invalid
         '403':
           description: Insufficient permissions
         '404':

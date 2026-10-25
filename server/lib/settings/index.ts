@@ -544,6 +544,9 @@ class Settings {
       series4kEnabled: this.data.sonarr.some(
         (sonarr) => sonarr.is4k && sonarr.isDefault
       ),
+      bookAudioEnabled: this.data.readarr.some(
+        (readarr) => readarr.is4k && readarr.isDefault
+      ),
       discoverRegion: this.data.main.discoverRegion,
       streamingRegion: this.data.main.streamingRegion,
       originalLanguage: this.data.main.originalLanguage,

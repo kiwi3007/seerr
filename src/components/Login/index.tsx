@@ -143,7 +143,7 @@ const Login = () => {
             className="min-w-0 flex-grow"
             onClick={() => setMediaServerLogin(true)}
           >
-            <MediaServerLogo />
+            {MediaServerLogo && <MediaServerLogo />}
             <span>{mediaServerName}</span>
           </ButtonWithLoader>
         ))

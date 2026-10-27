@@ -6,6 +6,7 @@ import {
   isDramatisedRelease,
   normalizeIdentity,
   resolveHardcoverBookId,
+  throttleLookup,
   type ChaptarrNativeBook,
   type ChaptarrNativeEdition,
   type ChaptarrSource,
@@ -261,5 +262,37 @@ describe('isDramatisedRelease', () => {
       ])
     );
     assert.ok(!isDramatisedRelease('Gamer', ['/a/Gamer - Galaxy.m4b']));
+  });
+});
+
+describe('throttleLookup', () => {
+  it('runs lookups one at a time with a minimum gap, even after a failure', async () => {
+    const starts: number[] = [];
+    const inner: HardcoverIdentityLookup = {
+      getBookIdsForEditions: async () => {
+        starts.push(Date.now());
+        throw new Error('429');
+      },
+      getBookIdsForIdentifiers: async () => {
+        starts.push(Date.now());
+        return [1];
+      },
+      searchBookIdentities: async () => {
+        starts.push(Date.now());
+        return [];
+      },
+    };
+    const throttled = throttleLookup(inner, 40);
+
+    const results = await Promise.allSettled([
+      throttled.getBookIdsForEditions([1]),
+      throttled.getBookIdsForIdentifiers({ isbn13s: ['x'], asins: [] }),
+      throttled.searchBookIdentities('q'),
+    ]);
+
+    assert.equal(results[0].status, 'rejected');
+    assert.deepEqual(results[1], { status: 'fulfilled', value: [1] });
+    assert.equal(starts.length, 3);
+    assert.ok(starts[1] - starts[0] >= 35 && starts[2] - starts[1] >= 35);
   });
 });

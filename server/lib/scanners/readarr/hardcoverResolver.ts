@@ -99,6 +99,37 @@ export interface HardcoverIdentityLookup {
   searchBookIdentities(query: string): Promise<HardcoverBookIdentity[]>;
 }
 
+/** Runs every lookup through one queue, starting each at least `intervalMs` after the last. */
+export const throttleLookup = (
+  lookup: HardcoverIdentityLookup,
+  intervalMs: number
+): HardcoverIdentityLookup => {
+  let queue: Promise<unknown> = Promise.resolve();
+  let lastStart = 0;
+
+  const schedule = <T>(call: () => Promise<T>): Promise<T> => {
+    const run = queue.then(async () => {
+      const wait = lastStart + intervalMs - Date.now();
+      if (wait > 0) {
+        await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      lastStart = Date.now();
+      return call();
+    });
+    queue = run.catch(() => undefined);
+    return run;
+  };
+
+  return {
+    getBookIdsForEditions: (ids) =>
+      schedule(() => lookup.getBookIdsForEditions(ids)),
+    getBookIdsForIdentifiers: (ids) =>
+      schedule(() => lookup.getBookIdsForIdentifiers(ids)),
+    searchBookIdentities: (query) =>
+      schedule(() => lookup.searchBookIdentities(query)),
+  };
+};
+
 export type ResolutionMethod = 'edition' | 'identifier' | 'title';
 
 export interface Resolution {

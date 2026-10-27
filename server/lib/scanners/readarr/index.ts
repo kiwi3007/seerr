@@ -12,11 +12,29 @@ import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { ReadarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { uniqWith } from 'lodash';
-import { chaptarrSourceFor, resolveHardcoverBookId } from './hardcoverResolver';
+import {
+  chaptarrSourceFor,
+  resolveHardcoverBookId,
+  throttleLookup,
+} from './hardcoverResolver';
 
-// Resolutions survive across scans: hits for the life of the process, misses for a day,
-// so unresolvable books aren't re-queried against Hardcover every recently-added scan.
-const UNRESOLVED_RETRY_MS = 24 * 60 * 60 * 1000;
+// Resolutions survive across scans: hits for the life of the process, misses for a week,
+// so unresolvable books aren't re-queried against Hardcover on every scan. Errors (e.g. rate
+// limits) aren't cached and retry on the next scan.
+const UNRESOLVED_RETRY_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Hardcover allows ~60 requests/minute and the scanner processes books concurrently, so all
+// resolver lookups share one queue spaced a little over a second apart.
+const throttledHardcover = throttleLookup(
+  {
+    getBookIdsForEditions: (ids) => new Hardcover().getBookIdsForEditions(ids),
+    getBookIdsForIdentifiers: (ids) =>
+      new Hardcover().getBookIdsForIdentifiers(ids),
+    searchBookIdentities: (query) =>
+      new Hardcover().searchBookIdentities(query),
+  },
+  1100
+);
 const resolutionCache = new Map<
   string,
   { hcId: number | null; expires: number }
@@ -252,7 +270,13 @@ class ReadarrScanner
     const serverAudio = this.enableAudioBook && this.currentServer.is4k;
     let hcId = parseInt(readarrBook.foreignBookId, 10);
 
-    if (isNaN(hcId)) {
+    // Only books that can show a status (owned, or wanted and so "processing") are worth a
+    // Hardcover lookup; unmonitored backlist entries without files would only burn quota.
+    const showsStatus =
+      (readarrBook.statistics?.bookFileCount ?? 0) > 0 ||
+      readarrBook.monitored ||
+      readarrBook.grabbed;
+    if (isNaN(hcId) && showsStatus) {
       hcId = (await this.resolveMissingHcId(readarrBook)) ?? NaN;
     }
 
@@ -319,7 +343,7 @@ class ReadarrScanner
       const resolution = await resolveHardcoverBookId(
         readarrBook.id,
         chaptarr,
-        new Hardcover()
+        throttledHardcover
       );
       resolutionCache.set(cacheKey, {
         hcId: resolution?.hcId ?? null,

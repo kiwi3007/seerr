@@ -1,3 +1,4 @@
+import Hardcover from '@server/api/hardcover';
 import type { ReadarrBook } from '@server/api/servarr/readarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
 import { MediaStatus, MediaType } from '@server/constants/media';
@@ -11,6 +12,15 @@ import BaseScanner from '@server/lib/scanners/baseScanner';
 import type { ReadarrSettings } from '@server/lib/settings';
 import { getSettings } from '@server/lib/settings';
 import { uniqWith } from 'lodash';
+import { chaptarrSourceFor, resolveHardcoverBookId } from './hardcoverResolver';
+
+// Resolutions survive across scans: hits for the life of the process, misses for a day,
+// so unresolvable books aren't re-queried against Hardcover every recently-added scan.
+const UNRESOLVED_RETRY_MS = 24 * 60 * 60 * 1000;
+const resolutionCache = new Map<
+  string,
+  { hcId: number | null; expires: number }
+>();
 
 type SyncStatus = StatusBase & {
   currentServer: ReadarrSettings;
@@ -240,7 +250,11 @@ class ReadarrScanner
 
   private async processReadarrBook(readarrBook: ReadarrBook): Promise<void> {
     const serverAudio = this.enableAudioBook && this.currentServer.is4k;
-    const hcId = parseInt(readarrBook.foreignBookId, 10);
+    let hcId = parseInt(readarrBook.foreignBookId, 10);
+
+    if (isNaN(hcId)) {
+      hcId = (await this.resolveMissingHcId(readarrBook)) ?? NaN;
+    }
 
     if (isNaN(hcId)) {
       this.log('Invalid Hardcover ID for book. Skipping item.', 'debug', {
@@ -280,6 +294,51 @@ class ReadarrScanner
         errorMessage: e.message,
         title: readarrBook.title,
       });
+    }
+  }
+
+  /**
+   * Chaptarr's Hardcover facade leaves foreignBookId empty when it never mapped a book to a
+   * Hardcover work. Resolve it from the identifiers Chaptarr's native API still holds.
+   */
+  private async resolveMissingHcId(
+    readarrBook: ReadarrBook
+  ): Promise<number | null> {
+    const chaptarr = chaptarrSourceFor(this.currentServer);
+    if (!chaptarr || !getSettings().main.hardcoverapikey) {
+      return null;
+    }
+
+    const cacheKey = `${this.currentServer.id}:${readarrBook.id}`;
+    const cached = resolutionCache.get(cacheKey);
+    if (cached && (cached.hcId !== null || cached.expires > Date.now())) {
+      return cached.hcId;
+    }
+
+    try {
+      const resolution = await resolveHardcoverBookId(
+        readarrBook.id,
+        chaptarr,
+        new Hardcover()
+      );
+      resolutionCache.set(cacheKey, {
+        hcId: resolution?.hcId ?? null,
+        expires: Date.now() + UNRESOLVED_RETRY_MS,
+      });
+      this.log(
+        resolution
+          ? 'Resolved Hardcover ID from Chaptarr identifiers.'
+          : 'No unambiguous Hardcover match from Chaptarr identifiers.',
+        resolution ? 'info' : 'debug',
+        { title: readarrBook.title, ...resolution }
+      );
+      return resolution?.hcId ?? null;
+    } catch (e) {
+      this.log('Failed to resolve Hardcover ID from Chaptarr.', 'warn', {
+        title: readarrBook.title,
+        errorMessage: e.message,
+      });
+      return null;
     }
   }
 

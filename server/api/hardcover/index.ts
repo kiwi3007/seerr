@@ -338,6 +338,119 @@ class Hardcover extends ExternalAPI {
       throw new Error(`[HARDCOVER] Failed to fetch book details: ${e.message}`);
     }
   };
+
+  /** Distinct Hardcover book IDs that the given Hardcover edition IDs belong to. */
+  public getBookIdsForEditions = async (
+    editionIds: number[]
+  ): Promise<number[]> => {
+    if (!editionIds.length) {
+      return [];
+    }
+
+    try {
+      const data = await this.post<EditionBookIdsResponse>('/', {
+        query: `
+          query EditionsById($ids: [Int!]!) {
+            editions(where: {id: {_in: $ids}}) {
+              book_id
+            }
+          }
+        `,
+        variables: { ids: editionIds },
+      });
+
+      return distinctBookIds(data);
+    } catch (e) {
+      throw new Error(
+        `[HARDCOVER] Failed to look up editions by ID: ${e.message}`
+      );
+    }
+  };
+
+  /** Distinct Hardcover book IDs whose editions carry any of the given ISBN-13s or ASINs. */
+  public getBookIdsForIdentifiers = async ({
+    isbn13s,
+    asins,
+  }: {
+    isbn13s: string[];
+    asins: string[];
+  }): Promise<number[]> => {
+    if (!isbn13s.length && !asins.length) {
+      return [];
+    }
+
+    try {
+      const data = await this.post<EditionBookIdsResponse>('/', {
+        query: `
+          query EditionsByIdentifier($isbns: [String!]!, $asins: [String!]!) {
+            editions(where: {_or: [{isbn_13: {_in: $isbns}}, {asin: {_in: $asins}}]}) {
+              book_id
+            }
+          }
+        `,
+        variables: { isbns: isbn13s, asins },
+      });
+
+      return distinctBookIds(data);
+    } catch (e) {
+      throw new Error(
+        `[HARDCOVER] Failed to look up editions by identifier: ${e.message}`
+      );
+    }
+  };
+
+  /** Raw book search keeping title and author names, for identity matching rather than display. */
+  public searchBookIdentities = async (
+    query: string
+  ): Promise<HardcoverBookIdentity[]> => {
+    try {
+      const data = await this.post<HardcoverSearchResponse>('/', {
+        query: `
+          query SearchIdentities($query: String!) {
+            search(query: $query, query_type: "book", per_page: 10, page: 1) {
+              results
+            }
+          }
+        `,
+        variables: { query },
+      });
+
+      return (data.data.search.results.hits || []).map((hit) => ({
+        id: +hit.document.id,
+        title: hit.document.title ?? '',
+        authorNames: hit.document.author_names ?? [],
+      }));
+    } catch (e) {
+      throw new Error(
+        `[HARDCOVER] Failed to search book identities: ${e.message}`
+      );
+    }
+  };
 }
+
+interface EditionBookIdsResponse {
+  data?: { editions: { book_id: number | null }[] };
+  errors?: { message: string }[];
+}
+
+export interface HardcoverBookIdentity {
+  id: number;
+  title: string;
+  authorNames: string[];
+}
+
+const distinctBookIds = (response: EditionBookIdsResponse): number[] => {
+  if (!response.data) {
+    throw new Error(response.errors?.[0]?.message ?? 'empty response');
+  }
+
+  return [
+    ...new Set(
+      response.data.editions
+        .map((edition) => edition.book_id)
+        .filter((id): id is number => typeof id === 'number')
+    ),
+  ];
+};
 
 export default Hardcover;

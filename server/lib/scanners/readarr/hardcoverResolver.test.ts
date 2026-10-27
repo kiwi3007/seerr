@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   chaptarrNativeBaseUrl,
+  isDramatisedRelease,
   normalizeIdentity,
   resolveHardcoverBookId,
   type ChaptarrNativeBook,
@@ -16,11 +17,13 @@ const server = (baseUrl?: string) => ({ baseUrl }) as ReadarrSettings;
 function chaptarr(
   book: Partial<ChaptarrNativeBook>,
   editions: ChaptarrNativeEdition[],
-  authorName?: string
+  authorName?: string,
+  filePaths: string[] = []
 ): ChaptarrSource {
   return {
     getBook: async (id) => ({ id, title: 'Untitled', authorId: 7, ...book }),
     getEditions: async () => editions,
+    getBookFilePaths: async () => filePaths,
     getAuthorName: async () => authorName,
   };
 }
@@ -197,5 +200,66 @@ describe('resolveHardcoverBookId', () => {
       null
     );
     assert.deepEqual(noAuthor.calls, []);
+  });
+
+  it('leaves dramatised releases unresolved so the narrated book stays requestable', async () => {
+    const byTitle = hardcover({ editions: [427945] });
+    assert.equal(
+      await resolveHardcoverBookId(
+        12,
+        chaptarr({ title: 'Dawnshard [Dramatized Adaptation]' }, [
+          { hardcoverEditionId: '32078224' },
+        ]),
+        byTitle.lookup
+      ),
+      null
+    );
+    assert.deepEqual(byTitle.calls, []);
+
+    const byFile = hardcover({ identifiers: [427815] });
+    assert.equal(
+      await resolveHardcoverBookId(
+        12,
+        chaptarr(
+          { title: 'The Hope of Elantris' },
+          [{ isbn13: '9798200818761' }],
+          'Brandon Sanderson',
+          [
+            '/audiobooks/Elantris (Cosmere Universe) Book 1.5 - The Hope of Elantris [GA].m4b',
+          ]
+        ),
+        byFile.lookup
+      ),
+      null
+    );
+    assert.deepEqual(byFile.calls, []);
+  });
+});
+
+describe('isDramatisedRelease', () => {
+  it('recognises GraphicAudio and full-cast releases by title or file path', () => {
+    assert.ok(isDramatisedRelease("Shadow's Edge [Dramatized Adaptation]", []));
+    assert.ok(
+      isDramatisedRelease('Yumi', [
+        '/a/Yumi and the Nightmare Painter - GraphicAudio.m4b',
+      ])
+    );
+    assert.ok(
+      isDramatisedRelease('White Sand', ['/a/White Sand - Volume One [GA].m4b'])
+    );
+    assert.ok(
+      isDramatisedRelease('Unfettered II', [
+        '/a/Unfettered II - Full Cast/Unfettered II.m4b',
+      ])
+    );
+  });
+
+  it('treats ordinary narrated releases as narrated', () => {
+    assert.ok(
+      !isDramatisedRelease('Legion: Skin Deep', [
+        '/a/Legion_ Skin Deep (Unabridged).m4b',
+      ])
+    );
+    assert.ok(!isDramatisedRelease('Gamer', ['/a/Gamer - Galaxy.m4b']));
   });
 });

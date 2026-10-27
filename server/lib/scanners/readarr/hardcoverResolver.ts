@@ -14,6 +14,10 @@ import type { ReadarrSettings } from '@server/lib/settings';
  *   2. ISBN-13s / ASINs        -> the book owning an edition with that identifier (exact)
  *   3. title + author search   -> accepted only for a single exact normalised match
  * Anything ambiguous is left unresolved rather than guessed.
+ *
+ * Dramatised releases (GraphicAudio, full-cast) are deliberately skipped. Chaptarr keeps them as
+ * separate books, but Hardcover usually files them as editions of the base work, so resolving one
+ * would mark the base work's audiobook as owned and stop users requesting the narrated version.
  */
 
 const FACADE_PATH = /\/readarr\/hc\/[^/]+\/?$/;
@@ -66,9 +70,23 @@ export interface ChaptarrNativeEdition {
   asins?: string[] | null;
 }
 
+const DRAMATISED = /dramati[sz]ed|graphic ?audio|full[- ]cast|[[({]GA[\])}]/i;
+
+/**
+ * A GraphicAudio/full-cast release, judged by the book title or the owned files' paths. Chaptarr
+ * often lists narrated and GraphicAudio editions under one book, and doesn't report which edition
+ * a file belongs to, but release names reliably carry "GraphicAudio", "[GA]" or "Full Cast".
+ */
+export const isDramatisedRelease = (
+  title: string,
+  filePaths: string[]
+): boolean =>
+  DRAMATISED.test(title) || filePaths.some((path) => DRAMATISED.test(path));
+
 export interface ChaptarrSource {
   getBook(id: number): Promise<ChaptarrNativeBook>;
   getEditions(bookId: number): Promise<ChaptarrNativeEdition[]>;
+  getBookFilePaths(bookId: number): Promise<string[]>;
   getAuthorName(authorId: number): Promise<string | undefined>;
 }
 
@@ -99,10 +117,15 @@ export const resolveHardcoverBookId = async (
   chaptarr: ChaptarrSource,
   hardcover: HardcoverIdentityLookup
 ): Promise<Resolution | null> => {
-  const [book, editions] = await Promise.all([
+  const [book, editions, filePaths] = await Promise.all([
     chaptarr.getBook(chaptarrBookId),
     chaptarr.getEditions(chaptarrBookId),
+    chaptarr.getBookFilePaths(chaptarrBookId),
   ]);
+
+  if (isDramatisedRelease(book.title, filePaths)) {
+    return null;
+  }
 
   const editionIds = [
     ...new Set(
@@ -161,6 +184,11 @@ class ChaptarrNativeAPI extends ReadarrAPI {
   public getNativeEditions = (bookId: number) =>
     this.get<ChaptarrNativeEdition[]>('/edition', { params: { bookId } });
 
+  public getBookFilePaths = async (bookId: number) =>
+    (
+      await this.get<{ path?: string }[]>('/bookfile', { params: { bookId } })
+    ).map((file) => file.path ?? '');
+
   public getAuthorName = async (authorId: number) =>
     (await this.get<{ authorName?: string }>(`/author/${authorId}`)).authorName;
 }
@@ -182,6 +210,7 @@ export const chaptarrSourceFor = (
   return {
     getBook: api.getNativeBook,
     getEditions: api.getNativeEditions,
+    getBookFilePaths: api.getBookFilePaths,
     getAuthorName: api.getAuthorName,
   };
 };
